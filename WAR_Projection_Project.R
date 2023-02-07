@@ -14,13 +14,28 @@ library(aod)
 library(caret)
 library(magrittr)
 library(forecast)
+library(Hmisc)
+library(GGally)
+library(VGAM)
+library(party)
+library(png)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(broom)
+library(tidyr)
+#library(misaem)
+#library(AICcmodavg)
+#library(zoib)
+#library(rjags)
+#library(data.table)
 
 
 # Data Import and Imputing Missing Values
-Appearences <- read.csv("C:/Users/tanne/OneDrive/Documents/Job Stuff/Orioles Analyst Project/Appearances.csv")
-Batting <- read.csv("C:/Users/tanne/OneDrive/Documents/Job Stuff/Orioles Analyst Project/Batting.csv")
-People <- read.csv("C:/Users/tanne/OneDrive/Documents/Job Stuff/Orioles Analyst Project/People.csv")
-Lahman <- read.csv("C:/Users/tanne/OneDrive/Documents/Job Stuff/Orioles Analyst Project/Lahman.csv")
+Appearences <- read.csv("Baseball Job Stuff/Orioles Analyst Project/Appearances.csv")
+Batting <- read.csv("Baseball Job Stuff/Orioles Analyst Project/Batting.csv")
+People <- read.csv("Baseball Job Stuff/Orioles Analyst Project/People.csv")
+Lahman <- read.csv("Baseball Job Stuff/Orioles Analyst Project/Lahman.csv")
 
 #Filtering Data Frames to get 1994 on
 Batting <- filter(Batting, yearID > 1993)
@@ -55,9 +70,16 @@ Appearences$DRAA <- GS_c*DefensiveValues[1] + GS_ss*DefensiveValues[2] + GS_2b*D
 #Calculating OPS - run this first chunk first then run the chunk below.
 attach(Batting)
 Batting$PA <- AB + BB + IBB + HBP + SH + SF #PAs may be off by very small increments ~1-2. Needed for OBP calculation
+Batting$X1B <- (H-X2B - X3B - HR) #Calculating singles, needed for SLG
+
+
+#Batting= aggregate(Batting[c('G','AB', 'R', 'H', 'X2B', 'X3B', 'HR', 'RBI', 'SB', 'CS', 'BB', 'SO', 'IBB', 'HBP', 'SH', 'SF', 
+                     #'GIDP', 'PA', 'X1B')],
+                #by = list(Batting$playerID, Batting$yearID, Batting$lgID),
+                #FUN = sum)
+attach(Batting)
 Batting$OBP <- (H + BB + IBB + HBP)/PA #Calculating OBP
 Batting$OBP[is.na(Batting$OBP)] <- 0 #Transmuting NAs into 0s for OBP
-Batting$X1B <- (H-X2B - X3B - HR) #Calculating singles, needed for SLG
 Batting$SLG <- (X1B + X2B*2 + X3B*3 + HR*4)/AB #Calculating SLG%
 Batting$SLG[is.na(Batting$SLG)] <- 0 #Transmuting NAs into 0s for SLG
 
@@ -71,7 +93,11 @@ Batting$OPS <- OBP + SLG #Calculating OPS
 #Total1994$AB <-sum(Batting[Batting$yearID == "1994",]$AB, na.rm=TRUE)
 
 
-#Isolating statistics for each year in order to calculate league average OPS for each year 
+#Isolating statistics for each year in order to calculate league average OPS for each year
+
+#colnames(Batting)[1] <- "playerID"
+#colnames(Batting)[2] <- "yearID"
+#colnames(Batting)[3] <- "lgID"
 
 #Using AL Batting Data to avoid pitchers
 AL <- filter(Batting, lgID == "AL")
@@ -234,26 +260,27 @@ Batting$LeagueAvOPS[c(30960:32453)] <- OPS2017
 attach(Batting)
 Batting$RAA <- (PA * (OPS-LeagueAvOPS))/3.2135
 
-#df = merge(x=Batting,y=Appearences,by="playerID")
 
-##Merging data frames into one usable data frame. df includes records without corresponding Lahman data, df1 does not. SQL procedures performed in R.
+##Merging data frames into one usable data frame.SQL procedures performed in R.
 
 df = left_join(Batting, Appearences, by = c("playerID" = "playerID", "yearID" = "yearID", "teamID" = "teamID"))
 
-df = left_join(df, Lahman, by = c("playerID" = "lahman_id", "yearID" = "ï..year")) #Includes records without corresponding Lahman data
-
-df1 = right_join(df, Lahman, by = c("playerID" = "lahman_id", "yearID" = "ï..year")) #All Matched
+df = left_join(df, Lahman, by = c("playerID" = "lahman_id", "yearID" = "Ã¯..year")) #Includes records without corresponding Lahman data
 
 df = df = left_join(df, People, by = c("playerID" = "playerID")) #Includes records without corresponding Lahman data
 
-df1 = left_join(df1, People, by = c("playerID" = "playerID")) #Includes only records without corresponding Lahman data. Will be used later in LDA analysis.
 
-#Calculating RAR and WAR
+#Calculating RAR, WAR, WAR/PA, and creating blank column for Projected Plate Appearences
 df$RAR = df$DRAA + df$RAA + 20
 df$WAR = df$RAR/10
 
-df1$RAR = df1$DRAA + df1$RAA + 20
-df1$WAR = df1$RAR/10
+df<- transform(df, WAR_PA = WAR/PA)
+
+#df$ProPA <- NA
+
+Rookies <- filter(df, FirstYear == 1) #For use in projecting rookies
+
+summary(Rookies$WAR_PA) #average 1.86
 
 ##Filtering out unwanted entries
 
@@ -264,148 +291,326 @@ df$EffectiveYear = ifelse(df$birthYear >6, df$EffectiveYear-1, df$EffectiveYear)
 df$Age = df$EffectiveYear-df$birthYear
 #Checking to make sure Age looks correct
 summary(df$Age)
-#Filtering out players 30 or older
+#Filtering out players older than 30
 df <- dplyr::filter(df, Age <31)
 #Getting rid of players with no plate appearances
-df <-  dplyr::filter(df, PA >0)
-#Getting rid of pitchers (allowing for a couple of position player )
+df <-  dplyr::filter(df, PA >10)
+#Getting rid of pitchers (allowing for a couple of position player pitching appearances)
 df <- dplyr::filter(df, G_p <4 & G_all > G_p)
-
-
-##Doing the same thing for df1 
-df1$EffectiveYear = df1$yearID #Creating an empty column
-#Filtering so that players born in July or later are effectively one year younger in baseball terms
-df1$EffectiveYear = ifelse(df1$birthYear >6, df1$EffectiveYear-1, df1$EffectiveYear) 
-#Using the effective year to create an Age column
-df1$Age = df1$EffectiveYear-df1$birthYear
-#Checking to make sure Age looks correct
-summary(df1$Age)
-#Filtering out players 30 or older
-df1 <- dplyr::filter(df1, Age <31)
-#Getting rid of players with no plate appearances
-df1 <-  dplyr::filter(df1, PA >0)
-#Getting rid of pitchers (allowing for a couple of position player )
-df1 <- dplyr::filter(df1, G_p <4 & G_all > G_p)
-
 
 #Order by PlayerID, yearID
 df<- df[with(df, order(playerID, yearID)), ]
 #Determining whether there is a new player (first year?) 
 df<- transform(df, FirstYear = c(NA, ifelse(diff(yearID) < 0, 1, 0)))
-#dflags$SecondYear <- 0
-#dflags$SecondYear <- ifelse(diff(dflags$yearID, lag = 2) < 0, 1, 0)
 
-#All Lags
-#dflag1  %<>% mutate_all(funs(lag1 = lag(., 1), lag2 = lag(., 2), lag3 = lag(., 3)))
-dflag1 <-df
-#dflags <- df #Was experimenting with using up to 3 years of lags. 
-#Creating Lag 1 variables
-dflag1  %<>% mutate_all(funs(lag1 = lag(., 1)))
-#dflags  %<>% mutate_all(funs(lag1 = lag(., 1), lag2 = lag(., 2), lag3 = lag(., 3)))
-#Filtering out First Years (players we do not have previous data to project their current seasons)
-dflag1 <- filter(dflag1, FirstYear == 0)
-#Checking to make sure this is correctly done
-summary(dflag1$FirstYear)
-
-#Doing same thing for df1
-df1<- df1[with(df1, order(playerID, yearID)), ]
-#Determining whether there is a new player (first year?) 
-df1<- transform(df1, FirstYear = c(NA, ifelse(diff(yearID) < 0, 1, 0)))
-#df1<-transform(df1, SecondYear = c(NA, ifelse(diff(yearID, differences = 2) < 0, 1, 0)))
-df1lag1 <-df1
-#Creating Lag 1 variables
-df1lag1  %<>% mutate_all(funs(lag1 = lag(., 1)))
-#Filtering out First Years (players we do not have previous data to project their current seasons)
-df1lag1 <- filter(df1lag1, FirstYear == 0)
-#Checking to make sure this is correctly done
-summary(df1lag1$FirstYear)
+df<- df %>% distinct(playerID, yearID, .keep_all = TRUE)
 
 
-#### Modeling
+####### Final Data Formatting - I am splitting the data into player seasons by age
 
-#Dividing the data into training and test sets
-smp_size <- floor(0.75 * nrow(dflag1))
+All18 <- df %>% 
+  filter(between(Age, 18, 18))
+All19 <- df %>% 
+  filter(between(Age, 19, 19))
+All20 <- df %>% 
+  filter(between(Age, 20, 20))
+All21 <- df %>% 
+  filter(between(Age, 21,21))
+All22 <- df %>% 
+  filter(between(Age, 22,22))
+All23 <- df %>% 
+  filter(between(Age, 23,23))
+All24 <- df %>% 
+  filter(between(Age, 24,24))
+All25 <- df %>% 
+  filter(between(Age, 25,25))
+All26 <- df %>% 
+  filter(between(Age, 26,26))
+All27 <- df %>% 
+  filter(between(Age, 27,27))
+All28 <- df %>% 
+  filter(between(Age, 28,28))
+All29 <- df %>% 
+  filter(between(Age, 29,29))
+All30 <- df %>% 
+  filter(between(Age, 30,30))
 
-set.seed(660)
-dt <- sample(seq_len(nrow(dflag1)), size = smp_size)
-
-train <- dflag1[dt, ]
-test <- dflag1[-dt, ]
-
-## First exploring non-performance metric impacts on WAR with Linear Regression
-SimpleLM <- lm(formula = WAR ~ Age + height +weight + yearID + lgID.x, data = train)
-summary(SimpleLM)
-#Explains about 5% of variation in WAR, Older players in this subset are better, along with heavier and taller players,
-#NL players were better on average than AL players by 0.1 WAR Bat and Throwing Hand are not statistically significant
-
-
-####Now using lag 1 variables 
-Model1Lag1 <- lm(formula = WAR ~weight + lgID.x + HR_lag1 + WAR_lag1 +OBP_lag1 + SLG_lag1 + OBP_lag1:SLG_lag1, data = train)
-summary(Model1Lag1)
-
-#With prospect rankings
-#Creating data frame for only observations with prospect ranks 
-dfNoNA <- df1lag1[!(is.na(df1lag1$prospect_rank.x)), ]
-#Running Linear Model - Alternative Linear discriminant analysis attempted below, ran into issues because data frames were different sizes in dimensions
-WithProspects <- Model1Lag1 <- lm(formula = WAR ~weight + lgID.x + HR_lag1 + WAR_lag1 +OBP_lag1 + SLG_lag1 + OBP_lag1:SLG_lag1, data = dfNoNA)
-summary(WithProspects)
+######## Adding suffixes in order to distinguish the data by season that I have split up for when I rejoin them.
+colnames(All18) <- paste(colnames(df),"18",sep="_")
+colnames(All19) <- paste(colnames(df),"19",sep="_")
+colnames(All20) <- paste(colnames(df),"20",sep="_")
+colnames(All21) <- paste(colnames(df),"21",sep="_")
+colnames(All22) <- paste(colnames(df),"22",sep="_")
+colnames(All23) <- paste(colnames(df),"23",sep="_")
+colnames(All24) <- paste(colnames(df),"24",sep="_")
+colnames(All25) <- paste(colnames(df),"25",sep="_")
+colnames(All26) <- paste(colnames(df),"26",sep="_")
+colnames(All27) <- paste(colnames(df),"27",sep="_")
+colnames(All28) <- paste(colnames(df),"28",sep="_")
+colnames(All29) <- paste(colnames(df),"29",sep="_")
+colnames(All30) <- paste(colnames(df),"30",sep="_")
 
 
+#Making playerID columns universal for joining
+colnames(All18)[1] <- "playerID"
+colnames(All19)[1] <- "playerID"
+colnames(All20)[1] <- "playerID"
+colnames(All21)[1] <- "playerID"
+colnames(All22)[1] <- "playerID"
+colnames(All23)[1] <- "playerID"
+colnames(All24)[1] <- "playerID"
+colnames(All25)[1] <- "playerID"
+colnames(All26)[1] <- "playerID"
+colnames(All27)[1] <- "playerID"
+colnames(All28)[1] <- "playerID"
+colnames(All29)[1] <- "playerID"
+colnames(All30)[1] <- "playerID"
 
-######Evaluating Model
-#Creating mse function
+
+########## Now I am recombining the data into our final full dataset, joining by playerID
+
+setAge = full_join(All18, All19, by = c("playerID" = "playerID"))
+setAge = full_join(setAge, All20, by = c("playerID" = "playerID"))
+setAge = full_join(setAge, All21, by = c("playerID" = "playerID"))
+setAge = full_join(setAge, All22, by = c("playerID" = "playerID"))
+setAge = full_join(setAge, All23, by = c("playerID" = "playerID"))
+setAge = full_join(setAge, All24, by = c("playerID" = "playerID"))
+setAge = full_join(setAge, All25, by = c("playerID" = "playerID"))
+setAge = full_join(setAge, All26, by = c("playerID" = "playerID"))
+setAge = full_join(setAge, All27, by = c("playerID" = "playerID"))
+setAge = full_join(setAge, All28, by = c("playerID" = "playerID"))
+setAge = full_join(setAge, All29, by = c("playerID" = "playerID"))
+setAge = full_join(setAge, All30, by = c("playerID" = "playerID"))
+
+
+setAge <- setAge[order(setAge$playerID),] #ordering by playerID
+setAge[is.na(setAge)] = 0 #Setting NAs to 0s. Not ideal but in this case every row will have missing values by design and
+#imputing the mean or median would heavily bias the model toward these centers.
+
+#Prospect ranks being 0 or NA for these players would be misleading, so I am assigning all non-prospects a value of 150
+setAge$prospect_rank_18[setAge$prospect_rank_18 == 0] <- 150
+setAge$prospect_rank_19[setAge$prospect_rank_19 == 0] <- 150
+setAge$prospect_rank_20[setAge$prospect_rank_20 == 0] <- 150
+setAge$prospect_rank_21[setAge$prospect_rank_21 == 0] <- 150
+setAge$prospect_rank_22[setAge$prospect_rank_22 == 0] <- 150
+setAge$prospect_rank_23[setAge$prospect_rank_23 == 0] <- 150
+setAge$prospect_rank_24[setAge$prospect_rank_24 == 0] <- 150
+setAge$prospect_rank_25[setAge$prospect_rank_25 == 0] <- 150
+setAge$prospect_rank_26[setAge$prospect_rank_26 == 0] <- 150
+setAge$prospect_rank_27[setAge$prospect_rank_27 == 0] <- 150
+setAge$prospect_rank_28[setAge$prospect_rank_28 == 0] <- 150
+setAge$prospect_rank_29[setAge$prospect_rank_29 == 0] <- 150
+setAge$prospect_rank_30[setAge$prospect_rank_30 == 0] <- 150
+
+
+###Alternate functional approach to what is done above
+
+#df.Rep <- function(.data_Frame, .search_Columns, .search_Value, .sub_Value){
+  #.data_Frame[, .search_Columns] <- ifelse(.data_Frame[, .search_Columns]==.search_Value,.sub_Value/.search_Value,1) * .data_Frame[, .search_Columns]
+  #return(.data_Frame)
+#}
+
+#df.Rep(setAge, c("prospect_rank_18", "prospect_rank_19", "prospect_rank_20", "prospect_rank_21", "prospect_rank_22",
+               #"prospect_rank_23", "prospect_rank_24", "prospect_rank_25", "prospect_rank_26", "prospect_rank_27",
+               #"prospect_rank_28", 
+               #"prospect_rank_29", "prospect_rank_30"), 0, 150)
+
+
+###Creating total WAR field
+setAge <- setAge %>%
+  mutate(totalWAR = rowSums(dplyr::select(.,WAR_18, WAR_19, WAR_20, WAR_21, WAR_22, WAR_23, 
+                                          WAR_24, WAR_25, WAR_26, WAR_27, WAR_28, WAR_29, WAR_30), na.rm = TRUE))
+
+###Train Test Splitting for full model
+smp_size <- floor(0.75 * nrow(setAge))
+
+## Setting the seed to make my partition reproducible
+set.seed(123)
+train_ind <- sample(seq_len(nrow(setAge)), size = smp_size)
+
+train <- setAge[train_ind, ]
+test <- setAge[-train_ind, ]
+
+
+########## Modeling
+
+#Model to project total WAR using all seasons of data.
+
+TotalWARLM =lm(totalWAR ~OBP_19 + OBP_20 + OBP_21 + OBP_22 + OBP_23 + OBP_24
+               + OBP_25 + OBP_26 + OBP_27 + OBP_28 + OBP_29 + OBP_30 + DRAA_22 + DRAA_30 + HR_20 + HR_21 + HR_22 + 
+                 HR_23 + HR_24 + HR_25 + HR_26 + HR_27 + HR_28 + HR_29 + HR_30 + 
+                 SO_20 + SO_22 + SO_23 + SO_24 + SO_25 + SO_26 + SO_27 + SO_29, data = train, na.action=na.omit)
+summary(TotalWARLM)
+
+tab_model(TotalWARLM)
+
+test$PWAR <- predict(TotalWARLM, newdata = test, type = "response")
+prediction <- test[c('playerID', 'totalWAR', 'PWAR')]
+#Writing CSV file with predictions
+write.csv(prediction, file = "totalWARResults.csv")
+
+
+
+####Validating regression results
+res <- TotalWARLM$residuals
+plot(res, ylab="Residuals")
+
 mse <- function(sm) 
   mean(sm$residuals^2)
 
 #AIC, mse and BIC calculations
-AIC(Model1Lag1)
-mse(Model1Lag1)
-BIC(Model1Lag1)
 
-#Bootstrapping
-boot.fn=function(data,index)
-  return(coef(lm(formula = WAR ~weight + lgID.x + HR_lag1 + WAR_lag1 +OBP_lag1 + SLG_lag1 + OBP_lag1:SLG_lag1, data = data)))
-
-set.seed(1)
-boot.fn(train,sample(500,500,replace=T))
+AIC(TotalWARLM)
+mse(TotalWARLM)
+BIC(TotalWARLM)
 
 
-#Outputting Predictions
-test$P_WAR <- predict(Model1Lag1, newdata = test, type = "response")
-prediction <- test[c("yearID", "playerID", "P_WAR", "WAR")]
-#Writing CSV file with predictions
-write.csv(prediction, file = "WAR_projections.csv")
+######Testing to see how many years we need to make good predictions - prospect rankings come majorly in handy here.
 
+TotalWAR1824LM =lm(totalWAR ~OBP_20 + OBP_21 + OBP_22 + OBP_23 + OBP_24 + HR_19 
+                   + HR_20 + HR_21 + HR_22 + HR_23 + HR_24 + prospect_rank_18 + prospect_rank_20 + 
+                     SO_21 + SO_22 + SO_23 + SO_24, 
+                   data = train, na.action=na.omit)
 
-######## Closing Thoughts
+TotalWAR1824LMPA =lm(totalWAR ~OBP_20 + OBP_21 + OBP_22 + OBP_23 + OBP_24 + HR_19 
+                   + HR_20 + HR_21 + HR_22 + HR_23 + HR_24 + prospect_rank_18 + prospect_rank_20 + 
+                     SO_21 + SO_22 + SO_23 + SO_24 + PA_19 + PA_20 + PA_21 + PA_24, 
+                   data = train, na.action=na.omit)
 
-#The model that I chose to use was a 1-year lagged model in which the previous season of performance predicted the next season of WAR. I was able to 
-#predict approximately 30% of the variation in WAR with league ID (NL players were slightly better on average), previous year HRs, WAR, OBP, SLG and
-#an interaction term between OBP and SLG. I kept OBP in the model despite it failing to meet the threshold for statistical significance because 
-#I included an interaction term with OBP so I wanted to include all of the components of the interaction as well. 
+summary(TotalWAR1824LM)
+summary(TotalWAR1824LMPA)
 
-#I thought about #and looked into using ARIMA modeling for this assignment, but the format of our data made designing a clean time series a challenge.
-#Additionally, I would want to include more lags in the future and combine those lags in one model. I also attempted to use LDA for distinguishing means of 
-#values with prospect values versus those without, but ran into issues with using LDA on data grames with different numbers of variables. 
-#My attempt at using LDA is commented below. 
+AIC(TotalWAR1824LM)
+mse(TotalWAR1824LM)
+BIC(TotalWAR1824LM)
 
 
 
-
-#Linear discriminant analysis for comparing players with prospect rankings versus those that do not - Attempt
-
-#attach(df1lag1)
-#dfNoNA <- df1lag1[!(is.na(df1lag1$prospect_rank.x)), ]
-#dfNAs <- df1lag1[(is.na(df1lag1$prospect_rank.x)), ]
-
-#lda.fit=lda(WAR ~ weight + lgID.x + HR_lag1 + WAR_lag1 +OBP_lag1 + SLG_lag1 + OBP_lag1:SLG_lag1, data=df1lag1, subset = dfNoNA)
-#lda.fit #Shows the Group means referenced below. 
-#plot(lda.fit)
-#lda.pred=predict(lda.fit, dfNAs)
-#lda.class=lda.pred$class
-#table(lda.class,dfNoNAs)
+###Wanted to test whether including PAs was the right decision, as it only led to a small increase in R^2 and Adjusted R^2
+### at the cost of adding a lot more features. By AIC, which weighs the relative return of features, the PA model was better.
+AIC(TotalWAR1824LMPA)
+AIC(TotalWAR1824LM)
+mse(TotalWAR1824LMPA)
+mse(TotalWAR1824LM)
+BIC(TotalWAR1824LMPA)
+BIC(TotalWAR1824LM)
 
 
+####Decision Tree - Wanted to see how a 18-24 tree model made decisions. Kept PA out to allow the tree visual 
+#####to be more readable.
 
+# Give the chart file a name.
+png(file = "WAR1824_decision_tree.png")
+
+# Create the tree.
+output.tree <- ctree(
+  totalWAR ~OBP_18 + OBP_19 + OBP_20 + OBP_21 + OBP_22 + OBP_23 + OBP_24 + HR_19 
+  + HR_20 + HR_21 + HR_22 + HR_23 + HR_24 + prospect_rank_18 + prospect_rank_20,
+  data = train)
+
+# Plot the tree.
+plot(output.tree)
+
+# Save the file.
+dev.off()
+
+######### Individual Season projections - wanted to also look at projecting the player seasons by age for the purposes of 
+########## making single season projections like we would want to in real time. 
+
+
+WAR20LM =lm(WAR_20 ~ OBP_18 + OBP_19 + HR_19 + 
+              prospect_rank_18 + prospect_rank_19 + prospect_rank_20 + DRAA_19 + PA_19, data = setAge, na.action=na.omit)
+
+summary(WAR20LM)
+
+WAR21LM =lm(WAR_21 ~ OBP_18 + OBP_19 + OBP_20 + HR_19 + HR_20 +prospect_rank_20 + prospect_rank_21
+            + DRAA_19 + DRAA_20 + PA_19 + PA_20, 
+            data = setAge, na.action=na.omit)
+
+summary(WAR21LM)
+
+WAR22LM =lm(WAR_22 ~ OBP_21 + HR_19 + HR_20 + HR_21 + prospect_rank_20 +
+              prospect_rank_22 + 
+              + DRAA_19 + DRAA_21 +SO_21 + PA_20 + PA_21, 
+            data = setAge, na.action=na.omit)
+
+summary(WAR22LM)
+
+WAR23LM =lm(WAR_23 ~ OBP_22 + HR_21 + HR_22
+              + DRAA_20 + DRAA_22 + prospect_rank_23 + PA_22, 
+            data = setAge, na.action=na.omit)
+
+summary(WAR23LM)
+
+WAR24LM =lm(WAR_24 ~ OBP_21 + OBP_22 + OBP_23 + HR_21 + HR_22 + prospect_rank_22 +
+              prospect_rank_24 +
+              +DRAA_22 + SO_22 + SO_23 + SO_24, 
+            data = setAge, na.action=na.omit)
+
+summary(WAR24LM)
+
+WAR25LM =lm(WAR_25 ~  OBP_24 + HR_21 + HR_22 + HR_23 + prospect_rank_23 +
+              +prospect_rank_25 +
+              + DRAA_22 + SO_22 + SO_23 + SO_24 + PA_23 + PA_24, 
+            data = setAge, na.action=na.omit)
+
+summary(WAR25LM)
+
+WAR26LM =lm(WAR_26 ~ OBP_25 + HR_23 + HR_24 + HR_25
+              + DRAA_25 + SO_23 + SO_24 + SO_25 + PA_24 + PA_25, 
+            data = setAge, na.action=na.omit)
+
+summary(WAR26LM)
+
+WAR27LM =lm(WAR_27 ~ OBP_24 + OBP_25 + OBP_26 + HR_24 + HR_25 + HR_26 + SO_24 + SO_25 + SO_26 + PA_26, 
+            data = setAge, na.action=na.omit)
+
+summary(WAR27LM)
+
+WAR28LM =lm(WAR_28 ~ OBP_25 + OBP_26 + OBP_27 + HR_25 + HR_26 + HR_27 + SO_25 + SO_26 +
+              SO_27 + PA_27, 
+            data = setAge, na.action=na.omit)
+
+summary(WAR28LM)
+
+WAR29LM =lm(WAR_29 ~ OBP_28 + HR_26 + HR_27 + HR_28 + SO_26 + SO_27 + SO_28 + PA_28, 
+            data = setAge, na.action=na.omit)
+
+summary(WAR29LM)
+
+WAR30LM =lm(WAR_30 ~ OBP_29 + HR_27 + HR_28 + HR_29 + SO_27 + SO_29 + PA_29, 
+            data = setAge, na.action=na.omit)
+
+summary(WAR30LM)
+
+#Making list of models 
+ModelList <- list(WAR20LM, WAR21LM, WAR22LM, WAR23LM, WAR24LM, WAR25LM, WAR26LM, WAR27LM, WAR28LM, WAR29LM, WAR30LM)
+
+#Model Validation
+sapply(ModelList,AIC)
+sapply(ModelList, mse)
+sapply(ModelList, BIC)
+
+
+ols_table <- ModelList %>%
+  select(-statistic, -p.value) %>%
+  mutate_each(funs(round(., 2)), -term) %>% 
+  gather(key, value, estimate:std.error) %>%
+  spread(model, value) 
+
+ols_table
+
+all_models <- rbind_list(
+  WAR20LM %>% mutate(model = 1),
+  WAR21LM %>% mutate(model = 2),
+  WAR22LM %>% mutate(model = 3),
+  WAR23LM %>% mutate(model = 4),
+  WAR24LM %>% mutate(model = 5),
+  WAR25LM %>% mutate(model = 6),
+  WAR26LM %>% mutate(model = 7),
+  WAR27LM %>% mutate(model = 8),
+  WAR28LM %>% mutate(model = 9),
+  WAR29LM %>% mutate(model = 10),
+  WAR30LM %>% mutate(model = 11))
 
   
