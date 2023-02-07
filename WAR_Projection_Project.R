@@ -444,7 +444,7 @@ TotalWARLM =lm(totalWAR ~OBP_19 + OBP_20 + OBP_21 + OBP_22 + OBP_23 + OBP_24
                  SO_20 + SO_22 + SO_23 + SO_24 + SO_25 + SO_26 + SO_27 + SO_29, data = train, na.action=na.omit)
 summary(TotalWARLM)
 
-tab_model(TotalWARLM)
+tab_model(TotalWARLM) #Created to output regression results cleanly
 
 test$PWAR <- predict(TotalWARLM, newdata = test, type = "response")
 prediction <- test[c('playerID', 'totalWAR', 'PWAR')]
