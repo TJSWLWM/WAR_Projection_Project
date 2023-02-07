@@ -282,6 +282,8 @@ Rookies <- filter(df, FirstYear == 1) #For use in projecting rookies
 
 summary(Rookies$WAR_PA) #average 1.86
 
+###Subtract 0.5 for non-top 100 prospects, Add 0.5 for top 100, 1 for top 50, 1.5 for top 10 prospects
+
 ##Filtering out unwanted entries
 
 df$EffectiveYear = df$yearID #Creating an empty column
